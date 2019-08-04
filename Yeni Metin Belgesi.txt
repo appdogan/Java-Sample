@@ -1,0 +1,1632 @@
+package com.rfid.bt;
+
+import android.app.Activity;
+import android.app.AlertDialog;
+import android.app.ProgressDialog;
+import android.content.ClipboardManager;
+import android.content.Context;
+import android.content.DialogInterface;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+import android.database.DataSetObserver;
+import android.graphics.Color;
+import android.net.Uri;
+import android.nfc.Tag;
+import android.os.AsyncTask;
+import android.os.Environment;
+import android.os.Handler;
+import android.support.v7.app.AppCompatActivity;
+import android.os.Bundle;
+import android.text.InputType;
+import android.util.DisplayMetrics;
+import android.util.Log;
+import android.view.KeyEvent;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.Window;
+import android.view.WindowManager;
+import android.view.inputmethod.InputMethodManager;
+import android.webkit.WebView;
+import android.widget.AbsListView;
+import android.widget.AdapterView;
+import android.widget.Button;
+import android.widget.EditText;
+import android.widget.LinearLayout;
+import android.widget.ListAdapter;
+import android.widget.ListView;
+import android.widget.RelativeLayout;
+import android.widget.TextView;
+import android.widget.Toast;
+
+import com.android.volley.RequestQueue;
+import com.android.volley.toolbox.Volley;
+import com.rfid.api.ADReaderInterface;
+import com.rfid.bt.model.Brand;
+import com.rfid.bt.model.Location;
+import com.rfid.bt.model.TagInfo;
+import com.rfid.bt.network.ConnectionManager;
+import com.rfid.bt.network.ConnectionResultListener;
+import com.rfid.bt.utils.AndroidHelper;
+import com.rfid.bt.utils.AsyncTaskManager;
+import com.rfid.bt.utils.FileManager;
+import com.rfid.bt.utils.OnMessageOKListener;
+import com.rfid.def.ApiErrDefinition;
+
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Timer;
+
+public class MainActivity extends Activity implements TagListener {
+
+    private static final int THR_MENU_EVENT_MS = 3000;
+    private static final int COUNT_MENU_EVENT = 4;
+
+    private ADReaderInterface m_reader = new ADReaderInterface();
+    private TagReader tagReader;
+
+    protected Location selectedLocation;
+    protected String id;
+    private AlertDialog alertLocation;
+    private ArrayList<Location> locationList;
+    protected ArrayList<Brand> brands;
+
+    private Handler myHandler = null;
+    private AlertDialog alertDialog = null;
+
+    private Button btnClear = null;
+    private Button btnUpload = null;
+    private TextView txtOutCount = null;
+    private ListView lvList;
+    private String strNotScan = "";
+    private String strUndefine = "";
+    private String strScanOk = "";
+    private Timer timer;
+    private List<TagInfo> list = new ArrayList<TagInfo>();
+    private DataAdapter adapter;
+    private List<String> statusList = new ArrayList<String>();
+
+    private int tagCount;
+    private Button btnSelectLocation;
+    private int lastExpectedNum;
+    private int lastReadNum;
+    private String txtExpected;
+    private String txtRead;
+    private int initialTagCount;
+    private AlertDialog.Builder dialogBuilder;
+    private AlertDialog imageDialog;
+
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_main);
+
+
+
+        // Ekran üstündeki uygulama ismi ve versiyon bilgilendirilmesi
+        try {
+            setTitle(getString(R.string.app_name) + " " + getPackageManager().getPackageInfo(getPackageName(), 0).versionName);
+        } catch (PackageManager.NameNotFoundException e) {
+            e.printStackTrace();
+        }
+
+        //
+
+
+
+        checkVersion(getVersionName());   //Versiyon Kontrol
+        showSelectedStore();
+
+        btnSelectLocation = (Button) findViewById(R.id.selectLocation);
+        strNotScan = (String) getResources().getText(R.string.status_not_scan);
+
+        strUndefine = (String) getResources().getText(R.string.status_undefine);
+
+        strScanOk = (String) getResources().getText(R.string.ok);
+        statusList.add(strNotScan);
+        statusList.add(strScanOk);
+        statusList.add(strUndefine);
+
+        btnClear = (Button) findViewById(R.id.clear);
+        btnUpload = (Button) findViewById(R.id.upload);
+
+        txtOutCount = (TextView) findViewById(R.id.out_count);
+
+        lvList = (ListView) findViewById(R.id.list);
+
+        btnSelectLocation.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View arg0) {
+                stopInventory();
+                showLocationListIgnoreSavedTags();
+            }
+        });
+
+        btnClear.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                stopInventory();
+                if (isThereAnyScannedTag())
+                    showClearWarning();
+            }
+        });
+
+        btnUpload.setOnClickListener(new View.OnClickListener() {
+
+            public void onClick(View v) {
+                startUpload();
+            }
+        });
+        lvList.setOnItemClickListener(new AdapterView.OnItemClickListener() {
+
+            @Override
+            public void onItemClick(AdapterView<?> arg0, View arg1, int arg2, long arg3) {
+                // TODO Auto-generated method stub
+                LinearLayout tr = (LinearLayout) arg1;
+                TextView tvRfid = (TextView) tr.getChildAt(0);
+                copy(tvRfid.getText().toString(), getApplicationContext());
+
+                /*
+                Intent it = new Intent(Intent.ACTION_VIEW);
+                it.setData(Uri.parse("http://www.atasayonline.com/sayim/fotograf.php?barkod=" + tvRfid.getText()));
+                it = Intent.createChooser(it, null);
+                startActivity(it);
+                */
+                DialogInterface.OnClickListener dialogClickListener = new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int choice) {
+                        switch (choice) {
+                            case DialogInterface.BUTTON_NEUTRAL:
+                                break;
+                        }
+                    }
+                };
+
+                WebView webView = new WebView(MainActivity.this);
+                webView.loadUrl("http://www.atasayonline.com/sayim/fotograf.php?barkod=" + tvRfid.getText());
+                webView.getSettings().setBuiltInZoomControls(true);
+
+                RelativeLayout webLayout = new RelativeLayout(MainActivity.this);
+                webLayout.setLayoutParams(new RelativeLayout.LayoutParams(RelativeLayout.LayoutParams.MATCH_PARENT, RelativeLayout.LayoutParams.MATCH_PARENT));
+                webLayout.setBackgroundColor(Color.WHITE);
+                webLayout.addView(webView);
+
+                dialogBuilder = new AlertDialog.Builder(MainActivity.this);
+                dialogBuilder
+                        .setTitle(tvRfid.getText())
+                        .setView(webLayout)
+                        .setNeutralButton(getString(R.string.ok), dialogClickListener);
+
+                imageDialog = dialogBuilder.create();
+                webLayout.setMinimumHeight(600);
+
+                // Get screen width and height in pixels
+                DisplayMetrics displayMetrics = new DisplayMetrics();
+                getWindowManager().getDefaultDisplay().getMetrics(displayMetrics);
+                // The absolute width of the available display size in pixels.
+                int displayWidth = displayMetrics.widthPixels;
+                // The absolute height of the available display size in pixels.
+                int displayHeight = displayMetrics.heightPixels;
+
+                // Initialize a new window manager layout parameters
+                WindowManager.LayoutParams layoutParams = new WindowManager.LayoutParams();
+
+                // Copy the alert dialog window attributes to new layout parameter instance
+                layoutParams.copyFrom(imageDialog.getWindow().getAttributes());
+
+                // Set the alert dialog window width and height
+                // Set alert dialog width equal to screen width 90%
+                // int dialogWindowWidth = (int) (displayWidth * 0.9f);
+                // Set alert dialog height equal to screen height 90%
+                // int dialogWindowHeight = (int) (displayHeight * 0.9f);
+
+                // Set alert dialog width equal to screen width 70%
+                int dialogWindowWidth = (int) (displayWidth * 0.9f);
+                // Set alert dialog height equal to screen height 70%
+                int dialogWindowHeight = (int) (displayHeight * 0.9f);
+
+                // Set the width and height for the layout parameters
+                // This will bet the width and height of alert dialog
+                layoutParams.width = dialogWindowWidth;
+                layoutParams.height = dialogWindowHeight;
+
+                // Apply the newly created layout parameters to the alert dialog window
+                //imageDialog.getWindow().setAttributes(layoutParams);
+                imageDialog.getWindow().requestFeature(Window.FEATURE_NO_TITLE);
+                imageDialog.show();
+                imageDialog.getWindow().setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+                //imageDialog.getWindow().setLayout(dialogWindowWidth, dialogWindowHeight);
+
+            }
+        });
+
+        adapter = new DataAdapter(list, this, statusList);
+        lvList.setAdapter(adapter);
+        lvList.setFadingEdgeLength(0);
+        lvList.setCacheColorHint(0);
+
+        DisplayMetrics metric = new DisplayMetrics();
+        getWindowManager().getDefaultDisplay().getMetrics(metric);
+
+        btnClear.setWidth(180);
+        btnUpload.setWidth(180);
+
+        dialog = new ProgressDialog(this);
+        dialog.setTitle(getResources().getString(R.string.please_wait));
+        dialog.setMessage(getResources().getString(R.string.uploading));
+
+        findViewById(R.id.ivArrowUp).setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                try {
+                    lvList.setSelectionAfterHeaderView();
+                } catch (Exception e) {
+                    // TODO: handle exception
+                }
+            }
+        });
+
+        findViewById(R.id.ivArrowDown).setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                try {
+                    lvList.setSelection(adapter.getCount() - 1);
+                } catch (Exception e) {
+                    // TODO: handle exception
+                }
+            }
+        });
+    }
+
+    /*
+    @Override
+    protected void onPause() {
+        super.onPause();
+        stopTagScanning();
+    }
+    */
+
+    public void showLocationListIgnoreSavedTags() {
+        showLocationList(true);
+    }
+
+    public void showClearWarning() {
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setMessage(getString(R.string.tags_will_be_cleared)).setPositiveButton(getString(R.string.ok), new DialogInterface.OnClickListener() {
+            @Override
+            public void onClick(DialogInterface dialog, int which) {
+                clear();
+            }
+        }).setNegativeButton(getString(R.string.cancel), new DialogInterface.OnClickListener() {
+            @Override
+            public void onClick(DialogInterface dialog, int which) {
+
+            }
+        }).show();
+    }
+
+    public void copy(String content, Context context) {
+        try {
+            ClipboardManager cmb = (ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
+            cmb.setText(content.trim());
+        } catch (Exception e) {
+            System.out.println(e.getMessage());
+        }
+    }
+
+    private String getVersionName() {
+        try {
+            return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (PackageManager.NameNotFoundException e) {
+            e.printStackTrace();
+            return "1";
+        }
+    }
+
+    private RequestQueue queue;
+    public RequestQueue getQueue() {
+        if (queue == null)
+            queue = Volley.newRequestQueue(this);
+        return queue;
+    }
+
+
+
+    //Versiyon Kontrol Sınıfı
+    private void checkVersion(final String versionName) {
+        ConnectionManager.nuke();
+        //showProgressDialog();
+        ConnectionManager.getInstance(getQueue()).get(ConnectionManager.URL_VERSION_CHECK, new ConnectionResultListener() {
+            @Override
+            public void onResponse(String response) {
+                dismissProgressDialog();     //Açılan mesaj popup kapatır.
+                response = response.replace("\n", "");
+                if (response.compareTo(versionName) > 0)
+                    showUpdateVersionDialog();   //güncelleme uyarısı
+                else
+                    showLocationListCheckTags();
+            }
+
+            @Override
+            public void onError(String error) {
+                dismissProgressDialog();
+
+                if (error == null || error.contains("UnknownHostException")) {
+                    AndroidHelper.showMessage(MainActivity.this, "", getString(R.string.no_internet), new OnMessageOKListener() {
+                        @Override
+                        public void onMessageOK() {
+                            checkVersion(versionName);
+                        }
+
+                        @Override
+                        public void onMenuPressed() {
+                            onMenuEvent();
+                        }
+
+                        @Override
+                        public void onBackPressed() {
+                            askForExit();
+                        }
+                    });
+                } else {
+                    AndroidHelper.showMessage(MainActivity.this, "", getString(R.string.server_error), new OnMessageOKListener() {
+                        @Override
+                        public void onMessageOK() {
+                            checkVersion(versionName);
+                        }
+
+                        @Override
+                        public void onMenuPressed() {
+                            onMenuEvent();
+                        }
+
+                        @Override
+                        public void onBackPressed() {
+                            askForExit();
+                        }
+                    });
+                }
+            }
+        }, false);
+    }
+
+    //
+
+
+    //Versiyon güncelleme uyarısı
+    protected void showUpdateVersionDialog() {
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setMessage(getString(R.string.upgrade_version_message)).setPositiveButton(getString(R.string.version_download), new DialogInterface.OnClickListener() {  //Güncelleme onaylandığında
+            @Override
+            public void onClick(DialogInterface dialog, int which) {
+                dialog.dismiss();
+                downloadNewVersion(); //Güncelleme ilemi yapılır
+                showLocationListCheckTags();
+            }
+        }).setNegativeButton(getString(R.string.version_cancel), new DialogInterface.OnClickListener() {   //Güncelleme istenmediğinde
+            @Override
+            public void onClick(DialogInterface dialog, int which) {
+                dialog.dismiss();
+                showLocationListCheckTags();
+            }
+        }).show();
+    }
+
+    //
+
+
+    //Versiyon güncelleme işlemi
+    protected void downloadNewVersion() {
+        new AsyncTaskManager() {
+
+            private boolean isError;
+
+            @Override
+            protected void onPreExecute() {
+                showProgressDialog();
+            }
+
+            @Override
+            protected void onPostExecute(Void unused) {
+                dismissProgressDialog();
+                if (!isError) {
+                    Intent intent = new Intent(Intent.ACTION_VIEW);
+                    intent.setDataAndType(Uri.fromFile(new File(Environment.getExternalStorageDirectory() + "/download/" + "AtasaySayim.apk")), "application/vnd.android.package-archive");
+                    intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    startActivity(intent);
+                }
+            }
+
+            @Override
+            protected Void doInBackground(String... params) {
+                try {
+                    URL url = new URL(ConnectionManager.URL_NEW_VERSION);
+                    HttpURLConnection c = (HttpURLConnection) url.openConnection();
+                    c.setRequestMethod("GET");
+                    c.setDoOutput(true);
+                    c.connect();
+
+                    String PATH = Environment.getExternalStorageDirectory() + "/download/";
+                    File file = new File(PATH);
+                    file.mkdirs();
+                    File outputFile = new File(file, "AtasaySayim.apk");
+                    FileOutputStream fos = new FileOutputStream(outputFile);
+
+                    InputStream is = c.getInputStream();
+
+                    byte[] buffer = new byte[1024];
+                    int len1 = 0;
+                    while ((len1 = is.read(buffer)) != -1) {
+                        fos.write(buffer, 0, len1);
+                    }
+                    fos.close();
+                    is.close();
+
+                } catch (IOException e) {
+                    isError = true;
+                }
+                return null;
+            }
+        }.execute("");
+    }
+
+    //
+
+
+
+    // Lokasyon kontrolü
+    public void showLocationListCheckTags() {
+        SharedPreferences pref = getSharedPreferences("TAGS", Context.MODE_PRIVATE);
+        if (pref.getString("id", null) == null) {   //lokasyon mevcut değilse
+            showLocationList(true);   //lokasyon listesi listelenir
+        } else {      //lokasyon mevcut ise
+            showSavedTags(pref);
+        }
+    }
+
+    //
+
+
+
+    //kaydedilen tagı listelemeye hazırlar
+    private void showSavedTags(SharedPreferences pref) {
+        id = pref.getString("id", "");
+        selectedLocation = new Location(pref.getString("locationId", ""), pref.getString("locationName", ""), pref.getInt("count", 0));   //Location sınıfından bir veri türetilir.
+        updateTagList((List<TagInfo>) FileManager.getInstance(this).readObjectFromFile("TAGS"));  //okuma işlemi yapılır
+        showSelectedLocation();
+    }
+
+    //
+
+
+    //
+    public void showLocationList(final boolean askForClearTags) {
+
+
+        if (isThereAnyScannedTag() && askForClearTags) { //taranmışsa ya da silme onayı alınmışsa //Tag silme işlemi kontrolü
+            showTagsWillBeDeletedWarning();
+            return;
+        }
+
+
+        showProgressDialog();
+        final Brand brand = getSelectedBrand();
+        String brandId = brand != null ? "/" + brand.getId() : "/0";
+
+        ConnectionManager.getInstance(getQueue()).get(ConnectionManager.URL_LOCATION_LIST + brandId + "/" + getVersionName(), new ConnectionResultListener() {
+            @Override
+            public void onResponse(String response) {
+                dismissProgressDialog();
+                try {
+                    JSONObject json = new JSONObject(response);
+                    int status = json.optInt("status");
+                    if (status == 0) {
+                        AndroidHelper.showMessage(MainActivity.this, "", json.optString("message"), new OnMessageOKListener() {
+                            @Override
+                            public void onMessageOK() {
+                                showLocationList(false);
+                            }
+
+                            @Override
+                            public void onMenuPressed() {
+                                onMenuEvent();
+                            }
+
+                            @Override
+                            public void onBackPressed() {
+                                askForExit();
+                            }
+                        });
+                    } else {
+                        showLocationList(json.optJSONArray("response"));
+                    }
+                } catch (JSONException e) {
+                    e.printStackTrace();
+                }
+            }
+
+            @Override
+            public void onError(String error) {
+                dismissProgressDialog();
+//				if (brand != null) {
+                if (error == null || error.contains("UnknownHostException")) {
+                    AndroidHelper.showMessage(MainActivity.this, "", getString(R.string.no_internet), new OnMessageOKListener() {
+                        @Override
+                        public void onMessageOK() {
+                            showLocationList(askForClearTags);
+                        }
+
+                        @Override
+                        public void onMenuPressed() {
+                            onMenuEvent();
+                        }
+
+                        @Override
+                        public void onBackPressed() {
+                            askForExit();
+                        }
+                    });
+                } else {
+                    AndroidHelper.showMessage(MainActivity.this, "", getString(R.string.server_error), new OnMessageOKListener() {
+                        @Override
+                        public void onMessageOK() {
+                            showLocationList(askForClearTags);
+                        }
+
+                        @Override
+                        public void onMenuPressed() {
+                            onMenuEvent();
+                        }
+
+                        @Override
+                        public void onBackPressed() {
+                            askForExit();
+                        }
+                    });
+                }
+//				}
+
+            }
+        }, true);
+    }
+
+    //
+
+
+    //
+    private void showTagsWillBeDeletedWarning() {  //taranmış ürünlerin silinme uyarısı
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setMessage(getString(R.string.tags_will_be_deleted)).setPositiveButton(getString(R.string.ok), new DialogInterface.OnClickListener() {
+            @Override
+            public void onClick(DialogInterface dialog, int which) {  //silme onaylanırsa
+                deleteAllTags();
+                showLocationList();
+            }
+        }).setNegativeButton(getString(R.string.cancel), new DialogInterface.OnClickListener() {
+            @Override
+            public void onClick(DialogInterface dialog, int which) {
+
+            }
+        }).show();
+
+        builder.setOnKeyListener(new DialogInterface.OnKeyListener() {
+            @Override
+            public boolean onKey(DialogInterface dialog, int keyCode, KeyEvent event) {
+                if (keyCode == KeyEvent.KEYCODE_BACK && event.getAction() == KeyEvent.ACTION_UP) {
+                    askForExit();
+                    return true;
+                }
+                return false;
+            }
+        });
+    }
+
+    //
+
+
+
+    protected void showLocationList(JSONArray jLocations) {
+        if (jLocations != null) {
+            locationList = new ArrayList<Location>();
+            String[] locationArr = new String[jLocations.length()];
+            for (int i = 0; i < jLocations.length(); i++) {
+                JSONObject jLocation = jLocations.optJSONObject(i);
+                Location location = new Location(jLocation.optString("locationId"), jLocation.optString("name"), jLocation.optInt("count"));
+                locationList.add(location);
+                locationArr[i] = location.getName() + " (Beklenen: " + location.getCount() + ")";
+            }
+            AlertDialog.Builder builder = new AlertDialog.Builder(this);
+            builder.setTitle("");
+            builder.setItems(locationArr, new DialogInterface.OnClickListener() {
+                public void onClick(DialogInterface dialog, int item) {
+                    selectedLocation = locationList.get(item);
+                    showSelectedLocation();
+                    showTags();
+                }
+            });
+            alertLocation = builder.create();
+
+            alertLocation.setOnKeyListener(new DialogInterface.OnKeyListener() {
+                @Override
+                public boolean onKey(DialogInterface dialog, int keyCode, KeyEvent event) {
+                    if (event.getAction() == KeyEvent.ACTION_UP && keyCode == KeyEvent.KEYCODE_MENU) {
+                        onMenuEvent();
+                    } else if (event.getAction() == KeyEvent.ACTION_UP && keyCode == KeyEvent.KEYCODE_POUND) {
+                        onMenuEvent();
+                    } else if (event.getAction() == KeyEvent.ACTION_UP && keyCode == KeyEvent.KEYCODE_BACK) {
+                        alertLocation.dismiss();
+                    }
+                    return true;
+                }
+            });
+
+            alertLocation.setOnShowListener(new DialogInterface.OnShowListener() {
+
+                @Override
+                public void onShow(DialogInterface alert) {
+                    ListView listView = ((AlertDialog) alert).getListView();
+                    final ListAdapter originalAdapter = listView.getAdapter();
+
+                    listView.setAdapter(new ListAdapter() {
+
+                        @Override
+                        public int getCount() {
+                            return originalAdapter.getCount();
+                        }
+
+                        @Override
+                        public Object getItem(int id) {
+                            return originalAdapter.getItem(id);
+                        }
+
+                        @Override
+                        public long getItemId(int id) {
+                            return originalAdapter.getItemId(id);
+                        }
+
+                        @Override
+                        public int getItemViewType(int id) {
+                            return originalAdapter.getItemViewType(id);
+                        }
+
+                        @Override
+                        public View getView(int position, View convertView, ViewGroup parent) {
+                            View view = originalAdapter.getView(position, convertView, parent);
+                            TextView textView = (TextView) view;
+                            textView.setBackgroundColor(position % 2 == 0 ? Color.WHITE : Color.parseColor("#EEEEEE"));
+                            textView.setTextSize(15);
+                            textView.setLayoutParams(new AbsListView.LayoutParams(AbsListView.LayoutParams.MATCH_PARENT, 64 /*
+																															 * this
+																															 * is
+																															 * item
+																															 * height
+																															 */));
+                            return view;
+                        }
+
+                        @Override
+                        public int getViewTypeCount() {
+                            return originalAdapter.getViewTypeCount();
+                        }
+
+                        @Override
+                        public boolean hasStableIds() {
+                            return originalAdapter.hasStableIds();
+                        }
+
+                        @Override
+                        public boolean isEmpty() {
+                            return originalAdapter.isEmpty();
+                        }
+
+                        @Override
+                        public void registerDataSetObserver(DataSetObserver observer) {
+                            originalAdapter.registerDataSetObserver(observer);
+
+                        }
+
+                        @Override
+                        public void unregisterDataSetObserver(DataSetObserver observer) {
+                            originalAdapter.unregisterDataSetObserver(observer);
+
+                        }
+
+                        @Override
+                        public boolean areAllItemsEnabled() {
+                            return originalAdapter.areAllItemsEnabled();
+                        }
+
+                        @Override
+                        public boolean isEnabled(int position) {
+                            return originalAdapter.isEnabled(position);
+                        }
+
+                    });
+
+                }
+
+            });
+
+            alertLocation.show();
+        }
+    }
+
+
+
+    //lokasyon ismi butona yazılır
+    public void showSelectedLocation() {
+        ((TextView) findViewById(R.id.tvSelectedLocation)).setText(selectedLocation.getName());
+    }
+
+    //
+
+
+    //
+    public void showLocationList() {
+        showLocationList(true);
+    }
+
+    //
+
+
+    protected void showTags() {
+        showProgressDialog();
+        Brand brand = getSelectedBrand();
+        String brandId = brand != null ? "/" + brand.getId() : "";
+        ConnectionManager.getInstance(getQueue()).get(ConnectionManager.URL_LOCATION_TAGS + selectedLocation.getId() + brandId, new ConnectionResultListener() {
+            @Override
+            public void onResponse(String response) {
+                dismissProgressDialog();
+                try {
+                    JSONObject json = new JSONObject(response);
+                    int status = json.optInt("status");
+                    if (status == 0) {
+                        AndroidHelper.showMessage(MainActivity.this, "", json.optString("message"), new OnMessageOKListener() {
+                            @Override
+                            public void onMessageOK() {
+                                showLocationList();
+                            }
+
+                            @Override
+                            public void onMenuPressed() {
+                                onMenuEvent();
+                            }
+
+                            @Override
+                            public void onBackPressed() {
+                                askForExit();
+                            }
+                        });
+                    } else {
+                        id = json.optString("id");
+                        updateTagList(json.optJSONArray("response"));
+                    }
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+
+            @Override
+            public void onError(String error) {
+                dismissProgressDialog();
+                // if (error != null && error.equals("ServerError")) {
+                AndroidHelper.showMessage(MainActivity.this, "", getString(R.string.server_error), new OnMessageOKListener() {
+                    @Override
+                    public void onMessageOK() {
+                        showLocationList();
+                    }
+
+                    @Override
+                    public void onMenuPressed() {
+                        onMenuEvent();
+                    }
+
+                    @Override
+                    public void onBackPressed() {
+                        askForExit();
+                    }
+                });
+                // }
+            }
+        }, true);
+    }
+
+
+    //Yeni tagı listeye ekler
+    protected void updateTagList(JSONArray jTags) {
+        if (jTags != null) {
+            initialTagCount = jTags.length();
+            List<TagInfo> tags = new ArrayList<TagInfo>();
+            for (int i = 0; i < jTags.length(); i++) {
+                TagInfo tag = new TagInfo();
+                tag.setTagUid(jTags.optString(i));
+                tag.setStatus(getString(R.string.status_not_scan));
+                tags.add(tag);
+            }
+            updateTagList(tags);
+        }
+    }
+
+    //
+
+
+
+    //bekleme durumu
+    private ProgressDialog dialog;
+    public void showProgressDialog() {
+        if (dialog == null || !dialog.isShowing())
+            dialog = ProgressDialog.show(this, "", getString(R.string.please_wait));
+    }
+
+    //
+
+
+
+    //Popup pencereyi kapatma
+    public void dismissProgressDialog() {
+        if (dialog != null && dialog.isShowing()) {
+            dialog.dismiss();
+        }
+
+    }
+
+    //
+
+    private void showSelectedStore() {
+        Brand brand = getSelectedBrand();
+        if (brand == null) {
+            ((TextView) findViewById(R.id.tvSelectedStore)).setVisibility(View.GONE);
+        } else {
+            ((TextView) findViewById(R.id.tvSelectedStore)).setVisibility(View.VISIBLE);
+            ((TextView) findViewById(R.id.tvSelectedStore)).setText((brand.getId() + " - " + brand.getName()));
+        }
+    }
+
+    private boolean isShowingPassDialog;
+    private long firstMenuEventTime;
+    private int menuPressCount;
+    private void onMenuEvent() {
+        if (!isShowingPassDialog) {
+            if (firstMenuEventTime == 0)
+                firstMenuEventTime = System.currentTimeMillis();
+            if (System.currentTimeMillis() - firstMenuEventTime < THR_MENU_EVENT_MS) {
+                menuPressCount++;
+                if (menuPressCount == COUNT_MENU_EVENT) {
+                    firstMenuEventTime = 0;
+                    menuPressCount = 0;
+                    showPasswordDialog();
+                }
+            } else {
+                firstMenuEventTime = System.currentTimeMillis();
+                menuPressCount = 1;
+            }
+        }
+    }
+
+    private void showPasswordDialog() {
+        isShowingPassDialog = true;
+        AlertDialog.Builder alert = new AlertDialog.Builder(this);
+
+        alert.setTitle(R.string.pass_title);
+
+        final EditText etPass = new EditText(this);
+        etPass.setMaxEms(20);
+        etPass.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        etPass.requestFocus();
+        alert.setView(etPass);
+        alert.setCancelable(false);
+
+        InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+        imm.toggleSoftInput(InputMethodManager.SHOW_FORCED, InputMethodManager.HIDE_IMPLICIT_ONLY);
+
+        alert.setPositiveButton(R.string.pass_ok, new DialogInterface.OnClickListener() {
+            public void onClick(DialogInterface dialog, int whichButton) {
+                dialog.dismiss();
+                isShowingPassDialog = false;
+                String pass = etPass.getText().toString();
+                checkPassword(pass);
+//				getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
+            }
+        });
+
+        alert.setNegativeButton(R.string.pass_cancel, new DialogInterface.OnClickListener() {
+            public void onClick(DialogInterface dialog, int whichButton) {
+                dialog.dismiss();
+                isShowingPassDialog = false;
+//				getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
+            }
+        });
+
+        alert.setOnCancelListener(new DialogInterface.OnCancelListener() {
+
+            @Override
+            public void onCancel(DialogInterface dialog) {
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
+                    }
+                });
+            }
+        });
+
+        alert.show();
+    }
+
+    protected void checkPassword(String pass) {
+        showProgressDialog();
+        HashMap<String, String> params = new HashMap<String, String>();
+        JSONObject json = new JSONObject();
+        try {
+            json.put("password", pass);
+        } catch (JSONException e) {
+            e.printStackTrace();
+        }
+        params.put("response", json.toString());
+        ConnectionManager.getInstance(getQueue()).post(ConnectionManager.URL_PASSWORD, params, new ConnectionResultListener() {
+            @Override
+            public void onResponse(String response) {
+                dismissProgressDialog();
+                try {
+                    JSONObject json = new JSONObject(response);
+                    if (json.optInt("status") == 0) {
+                        AndroidHelper.showMessage(MainActivity.this, "", getString(R.string.pass_err_password));
+                    } else {
+                        JSONArray jBrands = json.optJSONArray("response");
+                        brands = new ArrayList<Brand>();
+                        for (int i = 0; i < jBrands.length(); i++) {
+                            brands.add(new Brand(jBrands.optJSONObject(i).optString("companyNo"), jBrands.optJSONObject(i).optString("companyName")));
+                        }
+                        AndroidHelper.dismissAlert();
+                        dismissLocationAlert();
+                        showBrands();
+                    }
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+
+            @Override
+            public void onError(String error) {
+                dismissProgressDialog();
+            }
+        });
+    }
+
+    protected void dismissLocationAlert() {
+        try {
+            if (alertLocation != null && alertLocation.isShowing())
+                alertLocation.dismiss();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    public void getBrandList() {
+        showProgressDialog();
+        ConnectionManager.getInstance(getQueue()).get(ConnectionManager.URL_BRANDS, new ConnectionResultListener() {
+            @Override
+            public void onResponse(String response) {
+                try {
+                    JSONObject json = new JSONObject(response);
+                    if (json.optInt("status") != 1) {
+                        AndroidHelper.showMessage(MainActivity.this, "", json.optString("message"), new OnMessageOKListener() {
+                            @Override
+                            public void onMessageOK() {
+                                getBrandList();
+                            }
+
+                            @Override
+                            public void onMenuPressed() {
+
+
+                            }
+
+                            @Override
+                            public void onBackPressed() {
+                                askForExit();
+                            }
+                        });
+                    } else {
+                        brands = new ArrayList<Brand>();
+                        JSONArray jBrands = json.optJSONArray("response");
+                        for (int i = 0; i < jBrands.length(); i++)
+                            brands.add(new Brand(jBrands.optJSONObject(i).optString("brandNo"), jBrands.optJSONObject(i).optString("brandName")));
+                        showBrands();
+                    }
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+                dismissProgressDialog();
+            }
+
+            @Override
+            public void onError(String error) {
+                dismissProgressDialog();
+            }
+        }, false);
+    }
+
+    protected void showBrands() {
+        if (brands != null) {
+
+            AlertDialog.Builder builder = new AlertDialog.Builder(this);
+            final Brand brand = getSelectedBrand();
+            if (brand != null) {
+                builder.setTitle(brand.getName());
+            }
+
+            String[] brandsArr = new String[brands.size() + (brand == null ? 0 : 1)];
+            if (brand != null) {
+                brandsArr[0] = getString(R.string.remove_selected_store);
+                for (int i = 1; i < brands.size() + 1; i++)
+                    brandsArr[i] = brands.get(i - 1).getName();
+            } else {
+                for (int i = 0; i < brands.size(); i++)
+                    brandsArr[i] = brands.get(i).getName();
+            }
+            builder.setItems(brandsArr, new DialogInterface.OnClickListener() {
+                @Override
+                public void onClick(DialogInterface dialog, int which) {
+                    if (brand == null) {
+                        saveSelectedBrand(brands.get(which));
+                        showLocationList(false);
+                    } else {
+                        if (which == 0) {
+                            removeSelectedBrand();
+                        } else {
+                            saveSelectedBrand(brands.get(which - 1));
+                            showLocationList(false);
+                        }
+                    }
+                    // ((TextView)
+                    // findViewById(R.id.tvBrandName)).setText(getString(R.string.brand_name,
+                    // brands.get(which).getName()));
+                }
+            });
+
+            AlertDialog alert = builder.create();
+            builder.setCancelable(false);
+            alert.setCancelable(false);
+
+            alert.setOnShowListener(new DialogInterface.OnShowListener() {
+
+                @Override
+                public void onShow(DialogInterface alert) {
+                    ListView listView = ((AlertDialog) alert).getListView();
+                    final ListAdapter originalAdapter = listView.getAdapter();
+
+                    listView.setAdapter(new ListAdapter() {
+
+                        @Override
+                        public int getCount() {
+                            return originalAdapter.getCount();
+                        }
+
+                        @Override
+                        public Object getItem(int id) {
+                            return originalAdapter.getItem(id);
+                        }
+
+                        @Override
+                        public long getItemId(int id) {
+                            return originalAdapter.getItemId(id);
+                        }
+
+                        @Override
+                        public int getItemViewType(int id) {
+                            return originalAdapter.getItemViewType(id);
+                        }
+
+                        @Override
+                        public View getView(int position, View convertView, ViewGroup parent) {
+                            View view = originalAdapter.getView(position, convertView, parent);
+                            TextView textView = (TextView) view;
+                            textView.setBackgroundColor(position % 2 == 0 ? Color.WHITE : Color.parseColor("#EEEEEE"));
+                            textView.setTextSize(15);
+                            textView.setLayoutParams(new AbsListView.LayoutParams(AbsListView.LayoutParams.MATCH_PARENT, 64 /*
+																															 * this
+																															 * is
+																															 * item
+																															 * height
+																															 */));
+                            return view;
+                        }
+
+                        @Override
+                        public int getViewTypeCount() {
+                            return originalAdapter.getViewTypeCount();
+                        }
+
+                        @Override
+                        public boolean hasStableIds() {
+                            return originalAdapter.hasStableIds();
+                        }
+
+                        @Override
+                        public boolean isEmpty() {
+                            return originalAdapter.isEmpty();
+                        }
+
+                        @Override
+                        public void registerDataSetObserver(DataSetObserver observer) {
+                            originalAdapter.registerDataSetObserver(observer);
+
+                        }
+
+                        @Override
+                        public void unregisterDataSetObserver(DataSetObserver observer) {
+                            originalAdapter.unregisterDataSetObserver(observer);
+
+                        }
+
+                        @Override
+                        public boolean areAllItemsEnabled() {
+                            return originalAdapter.areAllItemsEnabled();
+                        }
+
+                        @Override
+                        public boolean isEnabled(int position) {
+                            return originalAdapter.isEnabled(position);
+                        }
+
+                    });
+
+                }
+
+            });
+
+            alert.show();
+        }
+    }
+
+    protected void removeSelectedBrand() {
+        getSharedPreferences("BRAND", Context.MODE_PRIVATE).edit().putString("id", null).putString("name", null).commit();
+        showSelectedStore();
+    }
+
+    protected void saveSelectedBrand(Brand brand) {
+        getSharedPreferences("BRAND", Context.MODE_PRIVATE).edit().putString("id", brand.getId()).putString("name", brand.getName()).commit();
+        showSelectedStore();
+    }
+
+    public Brand getSelectedBrand() {
+        SharedPreferences pref = getSharedPreferences("BRAND", Context.MODE_PRIVATE);
+        String id = pref.getString("id", null);
+        String name = pref.getString("name", null);
+        return id == null ? null : new Brand(id, name);
+    }
+
+    private void askForExit() {
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setTitle(R.string.tip);
+        builder.setMessage(R.string.question_exit);
+        builder.setPositiveButton(R.string.ok, new DialogInterface.OnClickListener() {
+            public void onClick(DialogInterface dialog, int which) {
+                dialog.dismiss();
+                //NoticeService.cancelNotification();
+                finish();
+            }
+        });
+        builder.setNegativeButton(R.string.cancel, new DialogInterface.OnClickListener() {
+
+            @Override
+            public void onClick(DialogInterface dialog, int which) {
+
+            }
+        });
+        builder.create().show();
+    }
+
+    @Override
+    public boolean onKeyUp(int keyCode, KeyEvent event) {
+        //Toast.makeText(this, KeyEvent.keyCodeToString(keyCode), Toast.LENGTH_SHORT).show();
+        switch (keyCode) {
+            case KeyEvent.KEYCODE_STAR:
+                toggleTagScanning();
+                break;
+        }
+        return true;
+    }
+
+    public void updateTagList(List<TagInfo> tags) {
+        this.list = tags;
+
+        adapter.update(list);
+        tagCount = getExpectedTagCount(tags); // list.size();
+        updateViewCount();
+    }
+
+    private int getExpectedTagCount(List<TagInfo> tags) {
+        int count = 0;
+        for (TagInfo tag : tags) {
+            if (!tag.getStatus().equals(strUndefine) && !tag.getStatus().equals(strScanOk))
+                count++;
+        }
+        return count;
+    }
+
+
+
+    // herhangi bir ürünün taranma durumu
+    public boolean isThereAnyScannedTag() {
+        if (list != null) {
+            for (TagInfo tag : list) {
+                if (tag.getStatus().equals(getString(R.string.ok)) || tag.getStatus().equals(getString(R.string.status_undefine)))  //taranmış ya da tanımsıx
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    //
+
+
+
+    // tüm taglar silinir
+    public void deleteAllTags() {
+        initialTagCount = 0;
+        list.clear();
+        adapter.update(list);
+        tagCount = getExpectedTagCount(list);
+        updateViewCount();
+    }
+
+    //
+
+    public List<TagInfo> getList() {
+        return list;
+    }
+
+    public Handler getMyHandler() {
+        return myHandler;
+    }
+
+    public void setMyHandler(Handler myHandler) {
+        this.myHandler = myHandler;
+    }
+
+    public void startUpload() {
+        if (isThereAnyScannedTag())
+            uploadScannedAndUndefinedTags(list);
+    }
+
+    public void uploadScannedAndUndefinedTags(List<TagInfo> list) {
+        stopInventory();
+        try {
+            JSONObject json = new JSONObject();
+            json.put("id", id);
+            json.put("locationId", selectedLocation.getId());
+            JSONArray jTags = new JSONArray();
+            if (list != null) {
+                for (TagInfo tag : list) {
+                    if (tag.getStatus().equals(getString(R.string.ok)) || tag.getStatus().equals(getString(R.string.status_undefine)))
+                        jTags.put(tag.getTagUid());
+                }
+            }
+            json.put("tags", jTags);
+            uploadTags(json);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private boolean isUploading;
+    private void uploadTags(JSONObject json) {
+        showProgressDialog();
+        HashMap<String, String> params = new HashMap<String, String>();
+        params.put("response", json.toString());
+        isUploading = true;
+        ConnectionManager.getInstance(getQueue()).post(ConnectionManager.URL_UPLOAD_TAGS, params, new ConnectionResultListener() {
+            @Override
+            public void onResponse(String response) {
+                isUploading = false;
+                dismissProgressDialog();
+                try {
+                    final JSONObject jsonResult = new JSONObject(response);
+                    int status = jsonResult.optInt("status");
+                    if (status == 0) {
+                        AndroidHelper.showMessage(MainActivity.this, "", jsonResult.optString("message"), new OnMessageOKListener() {
+                            @Override
+                            public void onMessageOK() {
+                                runOnUiThread(new Runnable() {
+
+                                    @Override
+                                    public void run() {
+                                        // deviceInfo.deleteAllTags();
+                                        // showLocationList(false);
+                                    }
+                                });
+
+                            }
+
+                            @Override
+                            public void onBackPressed() {
+                                askForExit();
+                            }
+
+                            @Override
+                            public void onMenuPressed() {
+                                onMenuEvent();
+                            }
+                        });
+                    } else {
+                        Toast.makeText(MainActivity.this, jsonResult.optString("message"), Toast.LENGTH_LONG).show();
+                        deleteAllTags();
+                        showLocationList(false);
+                    }
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+
+            @Override
+            public void onError(String error) {
+                dismissProgressDialog();
+                // if (error != null && error.equals("ServerError")) {
+                AndroidHelper.showMessage(MainActivity.this, "", getString(R.string.server_error), new OnMessageOKListener() {
+                    @Override
+                    public void onMessageOK() {
+                        showLocationList(false);
+                    }
+
+                    @Override
+                    public void onMenuPressed() {
+                        onMenuEvent();
+                    }
+
+                    @Override
+                    public void onBackPressed() {
+                        askForExit();
+                    }
+                });
+                // }
+            }
+        });
+    }
+
+    private void do_upload() {
+        new AsyncTask<Void, Void, String>() {
+
+            @Override
+            protected String doInBackground(Void... params) {
+                for (TagInfo tag : list) {
+                    if (tag.isUpload())
+                        continue;
+                    if (!tag.getStatus().equals(strNotScan)) {
+                        tag.setUpload(true);
+                    }
+                }
+                return getResources().getString(R.string.upload_complete);
+            }
+
+            @Override
+            protected void onPreExecute() {
+                dialog.show();
+                super.onPreExecute();
+            }
+
+            @Override
+            protected void onPostExecute(String result) {
+                showToast(result);
+                dialog.dismiss();
+                super.onPostExecute(result);
+            }
+
+        }.execute();
+    }
+
+    protected void showToast(String id) {
+        Toast.makeText(this, id, Toast.LENGTH_SHORT).show();
+    }
+
+
+
+    public void clear() {
+        for (TagInfo tag : list) {
+            if (!tag.isUpload() && !tag.getStatus().equals(strNotScan)) {
+                break;
+            }
+        }
+        ArrayList<TagInfo> newList = new ArrayList<TagInfo>();
+        for (TagInfo tag : list) {
+            if (tag.getStatus().equals(getString(R.string.ok))) {
+                tag.setStatus(getString(R.string.status_not_scan));
+                newList.add(tag);
+            } else if (!tag.getStatus().equals(getString(R.string.status_undefine))) {
+                newList.add(tag);
+            }
+        }
+        list = newList;
+        adapter.update(list);
+        updateViewCount();
+        // }
+    }
+
+    public boolean isExist(TagInfo newTag) {
+        for (TagInfo tag : list) {
+            if (tag.getTagUid().equals(newTag.getTagUid())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public boolean isExistIdentity(TagInfo newTag) {
+        for (TagInfo tag : list) {
+            // 当列表已经存在
+            if (tag.getTagUid().equals(newTag.getTagUid())) {
+                // 若为定义的标签,则更新状态为确认
+                if (tag.getStatus().equals(strNotScan)) {
+                    tag.setStatus(strScanOk);
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private int findTag(String uid) {
+        for (int i = 0; i < list.size(); i++) {
+            if (list.get(i).getTagUid().equals(uid)) {
+                return i;
+            }
+        }
+        return -1;
+        /*
+        for (TagInfo tagInfo : list) {
+            if (tagInfo.getTagUid().equals(uid)) {
+                return tagInfo;
+            }
+        }
+        return null;
+        */
+    }
+
+
+    // liste görünüm güncellenmesi
+    public void updateViewCount() {
+        String str = "";
+        int expectedNum = 0;
+        int readNum = 0;
+        for (TagInfo tag : list) {
+            if (tag.getStatus().equals(strScanOk) || tag.getStatus().equals(strUndefine)) {
+                readNum++;
+            }
+            if (!tag.getStatus().equals(strUndefine)) {
+                expectedNum++;
+            }
+            /*
+            if (!tag.getStatus().equals(strNotScan))
+                readNum++;
+            if (!tag.getStatus().equals(strUndefine))
+                expectedNum++;
+                */
+        }
+        tagCount = getExpectedTagCount(list);
+        expectedNum = tagCount;
+//		str = (String) getResources().getText(R.string.expected_number) + expectedNum + " " + (String) getResources().getText(R.string.read_number) + readNum;
+        str = getTxtExpected() + expectedNum + " " + getTxtRead() + readNum;
+        txtOutCount.setText(str);
+        lastExpectedNum = expectedNum;
+        lastReadNum = readNum;
+    }
+
+    //
+
+    private String getTxtExpected() {
+        if (txtExpected == null)
+            txtExpected = (String) getResources().getText(R.string.expected_number);
+        return txtExpected;
+    }
+
+    private String getTxtRead() {
+        if (txtRead == null)
+            txtRead = (String) getResources().getText(R.string.read_number);
+        return txtRead;
+
+    }
+
+    public void stopInventory() {
+            stopTagScanning();
+    }
+
+    private void stopTagScanning() {
+        if (m_reader != null) {
+            m_reader.RDR_Close();
+        }
+        if (tagReader != null) {
+            tagReader.stop();
+            Toast.makeText(this, getString(R.string.stop_identity), Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void startTagScanning() {
+        String conStr = String
+                .format("RDType=%s;CommType=COM;ComPath=%s;Baund=%s;Frame=%s;Addr=255",
+                        "AH2201", "/dev/ttyMT1",
+                        "38400",
+                        "8E1");
+        if (m_reader.RDR_Open(conStr) == ApiErrDefinition.NO_ERROR) {
+            tagReader = new TagReader(m_reader, this);
+            new Thread(tagReader).start();
+            Toast.makeText(this, getString(R.string.start_identity), Toast.LENGTH_SHORT).show();
+        } else {
+            Toast.makeText(this, "Cihaz bağlantısı kurulamadı.", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void toggleTagScanning() {
+        if (m_reader.isReaderOpen()) {
+            stopTagScanning();
+        } else {
+            startTagScanning();
+        }
+    }
+
+    @Override
+    public void onTagRead(String uid) {
+        if (imageDialog != null) {
+            imageDialog.dismiss();
+        }
+        TagInfo tag = null;
+        int tagIndex = findTag(uid);
+        if (tagIndex >= 0) {
+            tag = list.get(tagIndex);
+        }
+        if (tag == null) { // New (unexpected) tag found
+            TagInfo newTag = new TagInfo();
+            newTag.setTagUid(uid);
+            newTag.setStatus(strUndefine);
+            list.add(newTag);
+            adapter.update(list);
+            VoicePlayer.GetInst(this).Play();
+        } else if (tag.getStatus().equals(strNotScan)) { // Tag marked as scanned
+            tag.setStatus(strScanOk);
+            list.add(initialTagCount, tag);
+            list.remove(tagIndex);
+            adapter.update(list);
+            updateViewCount();
+            VoicePlayer.GetInst(this).Play();
+        }
+
+        /*
+        TagInfo identityTag = new TagInfo();
+        identityTag.setTagUid(uid);
+
+        boolean isFound = false;
+        for (TagInfo tag : list) {
+            if (tag.getTagUid().equals(identityTag.getTagUid())) {
+                if ((tag.getStatus().equals(getString(R.string.status_not_scan)))) {
+                    VoicePlayer.GetInst(this).Play();
+                }
+                isFound = true;
+            }
+        }
+
+        if (!isFound)
+            VoicePlayer.GetInst(this).Play();
+
+        identityTag.setStatus(strUndefine);
+        //identityTag.setStatus(strNotScan);
+        if (!isExistIdentity(identityTag)) {
+            list.add(identityTag);
+            adapter.notifyDataSetChanged();
+        }
+        adapter.update(list);
+        updateViewCount();
+        Log.d("DEBUGDEBUG", "New Tag: " + uid);
+        */
+    }
+}
